@@ -1,0 +1,58 @@
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+Makefile
+compile_commands.json
+
+# Build output directories
+out/
+build/
+bin/
+lib/
+obj/
+
+# Ninja
+.ninja_deps
+.ninja_log
+
+# MSVC/Windows binaries and temporary files
+*.exe
+*.dll
+*.lib
+*.a
+*.obj
+*.o
+*.pdb
+*.ilk
+*.idb
+*.ipdb
+
+# Logs and temp
+*.log
+*.tmp
+*~
+
+# IDEs / editors
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Archives
+*.zip
+*.tar.gz
+*.7z
+
+# Python caches (if any)
+__pycache__/
