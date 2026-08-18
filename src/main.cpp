@@ -1,7 +1,13 @@
-#include <iostream>
+#include "Application.h"
 
-int main()
-{
-	std::cout << "Hello world";
-	std::cin.get();
+int main(int argc, char* argv[]) {
+    cacheline::Application app;
+
+    if (!app.initialize(argc, argv)) {
+        return EXIT_FAILURE;
+    }
+
+    app.run();
+
+    return EXIT_SUCCESS;
 }

@@ -82,7 +82,7 @@ namespace cacheline {
 		static constexpr size_t MASK = Capacity - 1;
 
 		struct Slot {
-			alignas(alignof(T)) uint_8t storage[sizeof(T)];
+			alignas(alignof(T)) uint8_t storage[sizeof(T)];
 		};
 
 		alignas(64) std::atomic<size_t> m_head{ 0 };
