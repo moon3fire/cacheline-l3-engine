@@ -1,9 +1,13 @@
 add_executable(cacheline-l3-engine
     main.cpp
     "Application.h"
+    "Application.cpp"
     "core/SpscQueue.h"
     "core/PmrArena.h"
     "core/PmrArena.cpp"
+    "engine/L3OrderBook.h"
+    "engine/L3OrderBook.cpp"
+    "tests/OrderBookSmokeTest.h"
 )
 
 # Output directories
@@ -14,6 +18,7 @@ set_target_properties(cacheline-l3-engine PROPERTIES
 )
 
 target_include_directories(cacheline-l3-engine PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 

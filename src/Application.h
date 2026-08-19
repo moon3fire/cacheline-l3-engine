@@ -2,56 +2,54 @@
 
 #include <atomic>
 #include <cstdint>
-#include <memory_resource>
+#include <optional>
 #include <thread>
 
-//#include "core/..."
+#include "core/PmrArena.h"
+#include "core/SpscQueue.h"
+#include "engine/L3OrderBook.h"
+#include "network/NetworkFrame.h"
+#include "tests/OrderBookSmokeTest.h"
 
 namespace cacheline {
 
-	constexpr size_t DEFAULT_RING_BUFFER_CAPACITY = 1 << 16; // 65,536 <-> 2^16
+constexpr size_t DEFAULT_RING_BUFFER_CAPACITY = 1 << 16;
 
-	struct Config {
-		uint32_t networkCoreID{ 1 };
-		uint32_t engineCoreID{ 1 };
-		size_t arenaSizeMb{ 256 };
-		const char* network_interface{ "eth0" };
-		uint16_t udp_port{ 12012 };
-	};
+struct Config {
+    uint32_t networkCoreID{1};
+    uint32_t engineCoreID{1};
+    size_t arenaSizeMb{256};
+    const char* networkInterface{"eth0"};
+    uint16_t udpPort{12012};
+};
 
-	class Application {
-	public:
-		Application() noexcept;
-		~Application();
+class Application {
+public:
+    Application() noexcept;
+    ~Application();
 
-		Application(const Application&) = delete;
-		Application& operator=(const Application&) = delete;
+    Application(const Application&) = delete;
+    Application& operator=(const Application&) = delete;
 
-		[[nodiscard]] bool Initialize(int argc, char* argv[]) noexcept;
-		void Run() noexcept;
-		void Stop() noexcept;
-	
-	private:
-		bool SetupMemoryArena() noexcept;
-		bool SetupNetworkDriver() noexcept;
-		void PinCurrentThread(uint32_t currentCoreID) noexcept;
+    [[nodiscard]] bool Initialize(int argc, char* argv[]) noexcept;
+    [[nodiscard]] bool ShouldRunSelfTest() const noexcept;
+    [[nodiscard]] bool RunSelfTest() noexcept;
+    void Run() noexcept;
+    void Stop() noexcept;
 
-		void NetworkIngestLoop() noexcept;
-		void OrderbookEngineLoop() noexcept;
-	private:
-		Config m_config{};
-		static inline std::atomic<bool> m_running{ true };
+private:
+    bool SetupMemoryArena() noexcept;
+    bool SetupOrderBook() noexcept;
+    void PinCurrentThread(uint32_t currentCoreID) noexcept;
 
-		PmrArena m_memoryArena;
-		SpscQueue<NetworkFrame, DEFAULT_RING_BUFFER_CAPACITY> m_frameQueue;
+private:
+    Config m_config{};
+    std::atomic<bool> m_running{false};
+    bool m_runSelfTest{false};
 
-		NetworkDriver m_netDriver;
-		L3OrderBook m_orderBook;
-
-		LatencyProfiler m_profiler;
-
-		std::thread m_netThread;
-		std::thread m_engineThread;
-	};
+    PmrArena m_memoryArena;
+    SpscQueue<NetworkFrame, DEFAULT_RING_BUFFER_CAPACITY> m_frameQueue;
+    std::optional<L3OrderBook> m_orderBook;
+};
 
 } // namespace cacheline

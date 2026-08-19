@@ -6,7 +6,7 @@
 
 namespace cacheline {
 
-	explicit PmrArena::PmrArena(size_t capacityBytes) noexcept 
+	PmrArena::PmrArena(size_t capacityBytes) noexcept
 		: m_capacityBytes(capacityBytes) {}
 
 	PmrArena::~PmrArena() {

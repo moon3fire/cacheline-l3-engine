@@ -3,11 +3,15 @@
 int main(int argc, char* argv[]) {
     cacheline::Application app;
 
-    if (!app.initialize(argc, argv)) {
+    if (!app.Initialize(argc, argv)) {
         return EXIT_FAILURE;
     }
 
-    app.run();
+    if (app.ShouldRunSelfTest()) {
+        return app.RunSelfTest() ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    app.Run();
 
     return EXIT_SUCCESS;
 }
