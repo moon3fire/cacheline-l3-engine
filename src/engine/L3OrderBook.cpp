@@ -35,47 +35,162 @@ namespace cacheline
 
     L3OrderBook::L3OrderBook(PmrArena &arena)
         : m_resource(arena.GetResource())
-        , m_orders(m_resource)
-        , m_bids(std::greater<uint32_t>(), m_resource)
-        , m_asks(std::less<uint32_t>(), m_resource)
     {}
+
+    L3OrderBook::BookState &L3OrderBook::GetOrCreateBook(uint64_t symbol) noexcept
+    {
+        auto it = m_books.find(symbol);
+        if (it != m_books.end())
+            return it->second;
+
+        auto [newIt, inserted] = m_books.emplace(symbol, BookState(m_resource));
+        return newIt->second;
+    }
+
+    const L3OrderBook::BookState *L3OrderBook::FindBook(uint64_t symbol) const noexcept
+    {
+        auto it = m_books.find(symbol);
+        return it == m_books.end() ? nullptr : &it->second;
+    }
+
+    void L3OrderBook::Start() noexcept
+    {
+        m_running.store(true, std::memory_order_release);
+    }
+
+    void L3OrderBook::Stop() noexcept
+    {
+        m_running.store(false, std::memory_order_release);
+    }
+
+    bool L3OrderBook::IsRunning() const noexcept
+    {
+        return m_running.load(std::memory_order_acquire);
+    }
+
+    std::vector<Trade> L3OrderBook::ProcessOrder(const NetworkFrame &frame) noexcept
+    {
+        std::vector<Trade> trades;
+        auto &book = GetOrCreateBook(frame.symbol);
+
+        if (frame.msgType != MessageType::Add)
+        {
+            ProcessFrame(frame);
+            return trades;
+        }
+
+        uint32_t remainingQty = frame.qty;
+        const bool isBuy = frame.side == Side::Buy;
+
+        auto appendRestingOrder = [&](auto &incomingTree) {
+            if (remainingQty == 0)
+                return;
+
+            Order *newOrder = AllocateOrder(book, frame.orderID, frame.price, remainingQty, frame.side);
+            auto &level = incomingTree[frame.price];
+            level.price = frame.price;
+            level.Append(newOrder);
+            book.m_orders[frame.orderID] = newOrder;
+        };
+
+        auto matchAgainst = [&](auto &restingTree, auto &incomingTree, auto &&crosses) {
+            while (remainingQty > 0 && !restingTree.empty())
+            {
+                auto &bestLevel = restingTree.begin()->second;
+                Order *restingOrder = bestLevel.head;
+                if (!restingOrder)
+                {
+                    restingTree.erase(restingTree.begin());
+                    continue;
+                }
+
+                const uint32_t bestPrice = bestLevel.price;
+                if (!crosses(frame.price, bestPrice))
+                    break;
+
+                const uint32_t tradeQty = std::min(remainingQty, restingOrder->qty);
+                const uint32_t tradePrice = bestPrice;
+
+                Trade trade{
+                    frame.symbol,
+                    isBuy ? frame.orderID : restingOrder->orderID,
+                    isBuy ? restingOrder->orderID : frame.orderID,
+                    tradePrice,
+                    tradeQty
+                };
+                trades.push_back(trade);
+
+                remainingQty -= tradeQty;
+                restingOrder->qty -= tradeQty;
+
+                if (restingOrder->qty == 0)
+                {
+                    bestLevel.Remove(restingOrder);
+                    book.m_orders.erase(restingOrder->orderID);
+                    if (bestLevel.orderCount == 0)
+                        restingTree.erase(restingTree.begin());
+                }
+            }
+
+            appendRestingOrder(incomingTree);
+        };
+
+        if (isBuy)
+            matchAgainst(book.m_asks, book.m_bids, [](uint32_t incomingPrice, uint32_t restingPrice) {
+                return incomingPrice >= restingPrice;
+            });
+        else
+            matchAgainst(book.m_bids, book.m_asks, [](uint32_t incomingPrice, uint32_t restingPrice) {
+                return incomingPrice <= restingPrice;
+            });
+
+        return trades;
+    }
 
     void L3OrderBook::ProcessFrame(const NetworkFrame &frame) noexcept
     {
+        auto &book = GetOrCreateBook(frame.symbol);
+
         switch (frame.msgType)
         {
         case MessageType::Add:
-            AddOrder(frame.orderID, frame.price, frame.qty, frame.side);
+            AddOrderToBook(book, frame.orderID, frame.price, frame.qty, frame.side);
             break;
         case MessageType::Cancel:
-            CancelOrder(frame.orderID);
+            CancelOrderFromBook(book, frame.orderID);
             break;
         case MessageType::Modify:
-            ModifyOrder(frame.orderID, frame.qty);
+            UpdateBookOrderQty(book, frame.orderID, frame.qty);
             break;
         case MessageType::Execute:
-            ExecuteOrder(frame.orderID, frame.qty);
+            ReduceBookOrderQty(book, frame.orderID, frame.qty);
             break;
         }
     }
 
-    [[nodiscard]] uint32_t L3OrderBook::GetBestBid() const noexcept
+    [[nodiscard]] uint32_t L3OrderBook::GetBestBid(uint64_t symbol) const noexcept
     {
-        return m_bids.empty() ? 0 : m_bids.begin()->first;
+        const auto *book = FindBook(symbol);
+        if (!book)
+            return 0;
+        return book->m_bids.empty() ? 0 : book->m_bids.begin()->first;
     }
 
-    [[nodiscard]] uint32_t L3OrderBook::GetBestAsk() const noexcept
+    [[nodiscard]] uint32_t L3OrderBook::GetBestAsk(uint64_t symbol) const noexcept
     {
-        return m_asks.empty() ? 0 : m_asks.begin()->first;
+        const auto *book = FindBook(symbol);
+        if (!book)
+            return 0;
+        return book->m_asks.empty() ? 0 : book->m_asks.begin()->first;
     }
 
-    Order *L3OrderBook::AllocateOrder(uint64_t orderID, uint32_t price, uint32_t qty, Side side) noexcept
+    Order *L3OrderBook::AllocateOrder(BookState &book, uint64_t orderID, uint32_t price, uint32_t qty, Side side) noexcept
     {
         Order *order = nullptr;
-        if (m_freeList)
+        if (book.m_freeList)
         {
-            order = m_freeList;
-            m_freeList = m_freeList->next;
+            order = book.m_freeList;
+            book.m_freeList = book.m_freeList->next;
         }
         else
         {
@@ -87,20 +202,20 @@ namespace cacheline
         return order;
     }
 
-    void L3OrderBook::FreeOrder(Order *order) noexcept
+    void L3OrderBook::FreeOrder(BookState &book, Order *order) noexcept
     {
-        order->next = m_freeList;
-        m_freeList = order;
+        order->next = book.m_freeList;
+        book.m_freeList = order;
     }
 
-    void L3OrderBook::AddOrder(uint64_t orderID, uint32_t price, uint32_t qty, Side side) noexcept
+    void L3OrderBook::AddOrderToBook(BookState &book, uint64_t orderID, uint32_t price, uint32_t qty, Side side) noexcept
     {
-        Order *order = AllocateOrder(orderID, price, qty, side);
+        Order *order = AllocateOrder(book, orderID, price, qty, side);
 
-        auto [it, inserted] = m_orders.try_emplace(orderID, order);
+        auto [it, inserted] = book.m_orders.try_emplace(orderID, order);
         if (!inserted)
         {
-            FreeOrder(order);
+            FreeOrder(book, order);
             return;
         }
 
@@ -111,20 +226,18 @@ namespace cacheline
         };
 
         if (side == Side::Buy)
-            appendToTree(m_bids);
+            appendToTree(book.m_bids);
         else
-            appendToTree(m_asks);
-
+            appendToTree(book.m_asks);
     }
 
-    void L3OrderBook::CancelOrder(uint64_t orderID) noexcept
+    void L3OrderBook::CancelOrderFromBook(BookState &book, uint64_t orderID) noexcept
     {
-        auto it = m_orders.find(orderID);
-        if (it == m_orders.end())
+        auto it = book.m_orders.find(orderID);
+        if (it == book.m_orders.end())
             return;
 
         Order *order = it->second;
-
         auto cancelFromTree = [&](auto &tree)
         {
             auto levelIt = tree.find(order->price);
@@ -137,77 +250,76 @@ namespace cacheline
         };
 
         if (order->side == Side::Buy)
-            cancelFromTree(m_bids);
+            cancelFromTree(book.m_bids);
         else
-            cancelFromTree(m_asks);
+            cancelFromTree(book.m_asks);
 
-        m_orders.erase(it);
-        FreeOrder(order);
+        book.m_orders.erase(it);
+        FreeOrder(book, order);
     }
 
-    void L3OrderBook::ModifyOrder(uint64_t orderId, uint32_t newQty) noexcept
+    void L3OrderBook::UpdateBookOrderQty(BookState &book, uint64_t orderID, uint32_t newQty) noexcept
     {
         if (newQty == 0)
         {
-            CancelOrder(orderId);
+            CancelOrderFromBook(book, orderID);
             return;
         }
 
-        auto it = m_orders.find(orderId);
-        if (it == m_orders.end())
+        auto it = book.m_orders.find(orderID);
+        if (it == book.m_orders.end())
             return;
 
         Order *order = it->second;
         const uint32_t oldQty = order->qty;
-
         if (oldQty == newQty)
             return;
 
-        auto modifyTree = [&](auto &tree)
-        {
-            auto levelIt = tree.find(order->price);
-            if (levelIt != tree.end())
-            {
-                auto &level = levelIt->second;
-
-                if (newQty > oldQty)
-                {
-                    level.Remove(order);
-                    order->qty = newQty;
-                    level.Append(order);
-                }
-                else
-                {
-                    const uint32_t diff = oldQty - newQty;
-                    if (diff <= level.totalVolume)
-                        level.totalVolume -= diff;
-                    else
-                        level.totalVolume = 0;
-
-                    order->qty = newQty;
-                }
-            }
-        };
-
         if (order->side == Side::Buy)
-            modifyTree(m_bids);
+        {
+            auto levelIt = book.m_bids.find(order->price);
+            if (levelIt == book.m_bids.end())
+                return;
+
+            auto &level = levelIt->second;
+            const uint32_t delta = (newQty > oldQty) ? (newQty - oldQty) : (oldQty - newQty);
+            if (newQty > oldQty)
+                level.totalVolume += delta;
+            else
+                level.totalVolume = (level.totalVolume > delta) ? (level.totalVolume - delta) : 0;
+
+            order->qty = newQty;
+            return;
+        }
+
+        auto askLevelIt = book.m_asks.find(order->price);
+        if (askLevelIt == book.m_asks.end())
+            return;
+
+        auto &askLevel = askLevelIt->second;
+        const uint32_t delta = (newQty > oldQty) ? (newQty - oldQty) : (oldQty - newQty);
+        if (newQty > oldQty)
+            askLevel.totalVolume += delta;
         else
-            modifyTree(m_asks);
+            askLevel.totalVolume = (askLevel.totalVolume > delta) ? (askLevel.totalVolume - delta) : 0;
+
+        order->qty = newQty;
     }
 
-    void L3OrderBook::ExecuteOrder(uint64_t orderId, uint32_t qtyToExecute) noexcept
+    void L3OrderBook::ReduceBookOrderQty(BookState &book, uint64_t orderID, uint32_t executedQty) noexcept
     {
-        auto it = m_orders.find(orderId);
-        if (it == m_orders.end())
+        auto it = book.m_orders.find(orderID);
+        if (it == book.m_orders.end())
             return;
 
         Order *order = it->second;
+        if (executedQty >= order->qty)
+        {
+            CancelOrderFromBook(book, orderID);
+            return;
+        }
 
-        if (qtyToExecute >= order->qty)
-            CancelOrder(orderId);
-        else
-            ModifyOrder(orderId, order->qty - qtyToExecute);
-
+        UpdateBookOrderQty(book, orderID, order->qty - executedQty);
     }
 
 } // namespace cacheline

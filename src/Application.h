@@ -8,6 +8,8 @@
 #include "core/PmrArena.h"
 #include "core/SpscQueue.h"
 #include "engine/L3OrderBook.h"
+#include "io/InputProcessor.h"
+#include "io/OutputProcessor.h"
 #include "network/NetworkFrame.h"
 #include "tests/OrderBookSmokeTest.h"
 
@@ -46,6 +48,8 @@ private:
     Config m_config{};
     std::atomic<bool> m_running{false};
     bool m_runSelfTest{false};
+    std::string m_inputPath;
+    bool m_readFromStdin{false};
 
     PmrArena m_memoryArena;
     SpscQueue<NetworkFrame, DEFAULT_RING_BUFFER_CAPACITY> m_frameQueue;
